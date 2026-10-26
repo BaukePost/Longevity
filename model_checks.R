@@ -17,10 +17,10 @@ fitted <- fit_elife(
 plot(fitted, which.plot = "pp", plot.type = "ggplot")
 
 ## PP plot
-plot(fitted, which.plot = "pp", plot.type = "ggplot")
+plot(fitted, which.plot = "qq", plot.type = "ggplot")
 
 ## Threshold stability plot
-u = 105:112
+u = 105:110
 
 tstab(data$age_at_death, thresh = u, family = "gp")
 
