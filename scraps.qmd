@@ -1,0 +1,130 @@
+---
+title: "Scraps"
+format: html
+editor: visual
+---
+
+
+Load dedicated functions:
+
+```{r}
+source("functions.R")
+```
+
+The dates of death of semisupercentenarians (age of death 105-109) starts at 1978. However, The data for supercentenarians only spans 1987-2024, so I truncate the dataset at 1987. This leads to a reduction of only 41 observations (15054 -\> 15013), which seems much too little. However, if you look at the death tallies for years shortly after 1987, you see that it's quite low. So probably it's not that bad.
+
+```{r}
+# Import the data
+longevity_FR = read_excel("IDL_FRA_Death_105.xlsx") %>%
+  filter(DEATH_YEAR >= 1987) %>%
+  mutate(ltrunc = min(105, 1987 - BIRTH_YEAR), rtrunc = 2024 - BIRTH_YEAR)
+```
+
+```{r}
+# Returns data truncated at age cutoff u
+truncate = function(data, u) {
+  filter(data, AGEYEARS >= u)
+}
+
+longevity_FR_supercentenarians = truncate(longevity_FR, 110)
+```
+
+## Some basic visualisation
+
+Prima facie, it appears that the frequency decreases exponentially: the number of deaths at age t + 1 is about half that of age t, for all 105 \< t \< 115 or so.
+
+```{r}
+plot_histogram(longevity_FR)
+plot_histogram(longevity_FR_supercentenarians)
+plot_deaths_by_year(longevity_FR)
+plot_deaths_by_year(longevity_FR_supercentenarians)
+plot_yearly_maxima(longevity_FR)
+```
+
+Let's compare these with the expectation of the yearly maxes from a fitted model:-0.91
+
+```{r}
+fit1 = with(longevity_FR,
+           fit_elife(AGEYEARS,
+                     family = "exp",
+                     thresh = 105))
+
+fit2 = with(longevity_FR,
+            fit_elife(AGEYEARS,
+                      family = "gp",
+                      thresh = 105))
+
+
+# From AI:
+gpd_max_mean <- function(n, sigma, xi, mu = 0) {
+  stopifnot(xi < 1, xi != 0)
+  mu + sigma / xi * (exp(lgamma(n + 1) + lgamma(1 - xi) - lgamma(n + 1 - xi)) - 1)
+}
+
+max_exponentials = function(theta, n) 105 + theta * sum(1 / (1:n)) # with shape parameter
+
+plot_maxima = function(data, u) {
+  gpd = with(data,
+              fit_elife(AGEYEARS,
+                        family = "gp",
+                        thresh = u))
+  
+  sigma = coef(gpd)[1]
+  xi = coef(gpd)[2]
+  
+  maxima = get_maxima(data) %>% 
+    rowwise() %>%
+    mutate(expectation_gpd = u + gpd_max_mean(DEATH_COUNT, sigma, xi))
+  
+  ggplot(maxima, aes(x = DEATH_YEAR)) +
+    geom_point(aes(y = MAX_AGE, color = "Observed")) +
+    geom_point(aes(y = expectation_gpd, color = "Expected_gpd"))
+}
+
+plot_maxima(longevity_FR, 110)
+```
+
+Despite the sharp, almost threefold increase in semisupercentenarian deaths over the period 20002-2024, the yearly maximum age at death seems more or less constant. Let's have a look at whether how this pattern compares with the expectation of the max of the pareto-distributed values fitted with MLE:
+
+Custom functions for data visualisation, for easy reuse at different cutoffs:
+
+Threshold stability plot:
+
+```{r}
+with(longevity_FR_supercentenarians,
+     tstab(AGEYEARS,
+           family = "gp",
+           method = "profile",
+           ltrunc = ltrunc,
+           rtrunc = rtrunc,
+           plot.type = "ggplot",
+           thresh = 105:110)
+)
+```
+
+## Some basic model fitting
+
+```{r}
+null = with(longevity_FR,
+            fit_elife(AGEYEARS,
+                      family = "exp"))
+
+MLE = with(longevity_FR,
+            fit_elife(AGEYEARS,
+                      family = "gp",
+                      export = TRUE))
+
+
+anova(null, MLE, test = "LRT")
+
+plot(MLE, 
+     which.plot = c("pp","qq"))
+```
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+```{r}
+1 + 1
+```

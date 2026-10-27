@@ -23,8 +23,8 @@ plot(fitted, which.plot = "qq", plot.type = "ggplot")
 u = 105:110
 
 # Plotting the fitted model against the histogram of perceived values
-plot(fitted, which.plot = "cdf", plot.type = "ggplot")
-plot(fitted, which.plot = "dens", plot.type = "ggplot")
+plot(gpd, which.plot = "cdf", plot.type = "ggplot")
+plot(gpd, which.plot = "dens", plot.type = "ggplot")
 
 
 
