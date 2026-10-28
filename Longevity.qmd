@@ -187,7 +187,6 @@ for (i in 1:num_plots) {
   
   plots[i] = autoplot(exp_sim, which.wrap_plots(plot = "qq", plot.type = "ggplot", plot = FALSE))
 }
-
 wrap_plots(plots, ncol = 2)
 ```
 
