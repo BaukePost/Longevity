@@ -1,25 +1,22 @@
 ---
-title: "Longevity"
+title: "Long live the French?"
+subtitle: "A first shot at extreme value analysis"
+date: today
 format: pdf
+author: "Bauke Post"
 execute:
   echo: false
 ---
 
 ```{r}
+#| include: false
 library(readxl)
 library(ggplot2)
 library(dplyr)
 library(longevity)
-```
-
-```{r}
-# Import the data
-longevity = read_excel("IDL_FRA_Death_105.xlsx") %>%
-  filter(DEATH_YEAR >= 1987) %>%
-  mutate(age_years = AGEDAYS / 365.25) %>%
-  select(age_years, age_years_discrete = AGEYEARS, birth_year = BIRTH_YEAR, death_year = DEATH_YEAR)
-
-n = nrow(longevity)
+library(patchwork)
+library(knitr)
+library(lubridate)
 ```
 
 ```{r}
@@ -29,32 +26,99 @@ theme_set(theme_dark(base_size = 16))
 
 ```{r}
 ## Functions
-generate_xi_estimates = function(num_samples, num_obs, scale, shape, thresh) {
-  xi_estimates = rep(NA_real_, num_samples)
+simulate_gpd_truncated = function(model, ltrunc, rtrunc, u) {
+  if (length(ltrunc) != length(rtrunc)) {
+    stop("Length of lower and upper bound vectors must be equal")
+  }
   
+  u = model$thresh
+  
+  lower = ltrunc - u
+  upper = rtrunc - u
+  
+  num_obs = length(lower)
+  scale = coef(model)["scale"]
+  if ("shape" %in% names(coef(model))) {
+    shape = coef(model)["shape"] } else {
+      shape = 0
+    }
+  
+  excesses = samp_elife(num_obs, scale = scale, shape = shape, family = "gp", type2 = "ltrt", lower = lower, upper = upper)
+  
+  u + excesses
+}
+
+generate_xi_estimates = function(num_samples, model, data) {
+  num_observations = nrow(data)
+  
+  xi_estimates = rep(NA_real_, num_samples)
+
   for (i in 1:num_samples) {
-    x = thresh + samp_elife(num_obs, scale = scale, shape = shape, family = "gp", type2 = "ltrt")
+    x = simulate_gpd_truncated(model, data$ltrunc, data$rtrunc)
     
-    gp = fit_elife(x, thresh = thresh,
-                   family = "gp")
+    gp_fitted = fit_elife(x, thresh = model$thresh, family = "gp", ltrunc = data$ltrunc, rtrunc = data$rtrunc)
     
-    xi_estimates[i] = coef(gp)["shape"]
+    xi_estimates[i] = coef(gp_fitted)["shape"]
   }
   xi_estimates
-}  
+}
 
+add_truncation_bounds = function(data, lb, ub, u) {
+  data$ltrunc = with(data, pmax(u, interval(birth_date, lb) / years(1)))
+  data$rtrunc = with(data, interval(birth_date, ub) / years(1))
+  data
+}
 ```
 
+```{r}
+# Import the data
+longevity = read_excel("IDL_FRA_Death_105.xlsx") %>%
+  filter(DEATH_YEAR >= 1987)
 
+## Convert year, month, day columns to dates
+longevity$birth_date = with(longevity, make_date(BIRTH_YEAR, BIRTH_MONTH, BIRTH_DAY))
+longevity$death_date = with(longevity, make_date(DEATH_YEAR, DEATH_MONTH, DEATH_DAY))
 
-## 
+## Add truncation bounds
+longevity = add_truncation_bounds(longevity, lb = ymd("1987/01/01"), ub = ymd("2024/12/31"), u = 105)
 
-Question: is the exponential distribution an appropriate model for the upper tail of human lifespan, based on data from France?
+## Create continuous age variable measured in years
+longevity$age_years = with(longevity, interval(birth_date, death_date) / years(1))
 
-## Getting a feel for the data
+longevity = longevity %>% select(age_years, birth_date, death_date, ltrunc, rtrunc)
+
+n = nrow(longevity)
+```
+
+At 122 years and 164 days, Jeanne Calment (1875-1997) is the longest-living person in recorded history, despite smoking until the age of 117. One may wonder: how much longer would she have kept going if she hadn't? Is there, in fact, any limit on how long a French person can roam the earth? Intuitively, most of us probably reject this idea. But, if we are to believe Belzile and others (2021), we should at least reexamine this assumption: looking at data on French super-agers, they find that lifespan beyond 108 is consistent with an exponential distribution, which has no upper end-point. That is, although the probability of turning 130 (or even older) may be vanishingly small, it is nonetheless strictly positive.
+
+However, this conclusion is not immediately obvious from the data used by Belzile: prima facie, a distribution with a finite support seems theoretically and empirically justified as well. Moreover, the number of documented French super-agers has increased by around 50% since the publication of their paper. Does the conclusion still hold up to scrutiny? In this write-up, I try to find out (and play with some extreme value simulations along the way).
+
+## Data
+
+### The International Database on Longevity
+
+I use data from the International Database on Longevity (IDL), a database with validated records of (semi-)supercentenarians (people aged 105-109 and \>110 years at time of death, respectively). Although the IDL contains data on 13 different geographical entities, the French data is especially suitable for an extreme value analysis: the dataset was updated recently (in 2025) and contains over 10.000 cases, more than any other country for which IDL data is available. 14,625 of these are semi-supercentenarians, and 429 were supercentenarians at time of death. The relatively large number of supercentenarians is a major advantage of the French dataset for the purpose of extreme value analysis, because the more (representative, validated) information we have about the extremes, the more reliably we can fit our model.
+
+### Complications arising from the observation scheme
+
+Only individuals who died a (semi-)supercentenarian between 1978 and 2024 are recorded, that is, the data is interval-truncated. As it turns out, this complicates things a lot, because it means the data cannot be realistically modeled as being identically distributed. As an example, consider two arbitrary individuals in the dataset. Let's call them Albert and Béatrice, and suppose they are were born on the 1st of January of 1868 and 1916, respectively. Then Albert could have died no *younger* than +/- 110, while Béatrice could not have died any *older* than +/- 108. That is, given two deaths during the observation period, the probability distributions can look quite different!
+
+To account for the truncation complication, I use Belzile's 'Longevity' package for R for fitting and comparing models. I realize this is cheating a little, but I did it anyways because I wanted to focus on fitting extreme value models without getting bogged down in the minutiae of longevity observation schemes. Because truncation also violates the assumptions underlying some asymptotic results (e.g. the asymptotic normality of the MLE), I also rely more on simulations for estimation.
+
+### Some exploratory data analysis
+
+Let's have a look at the data through 2017. The fact that the IDL data is not iid also limits how much we can glean from direct graphing. Nonetheless, *given* the observation scheme, we can still make some worthwhile observations. For starters, the frequency drop-off is steep, at a relatively constant rate. Define the *naive discrete hazard rate (NDHR)* as follows: $$NDHR_{t+1} = \frac{n_{t+1}}{n_t},$$where $n_t$ denotes the number of people who died at age t = 105 and onward. Then the figure below shows that this hazard rate is fairly stable: for $n_t$ "large enough", the NDHR is between 0.44 and 0.53. Due to the small number of supercentenarians recorded by 2017, however, we can't say anything meaningful for t \> 110.
+
+The box plot shows how heavy the tail of the empirical distribution is: while the interquartile range is strongly concentrated in the left-end of the distribution, there are many outliers far beyond the upper whisker (at 1.5x intqtl). In particular, the case of Jeanne Calment, at 122, is an extreme outlier: no other deaths \> 115 years are visible.
 
 ```{r}
-plot_histogram = function(x = longevity$age_years, binwidth = 1/4, threshold = 104) {
+longevity_2017 = longevity %>% filter(death_date < ymd("2017/12/31"))
+longevity_2017 = add_truncation_bounds(longevity_2017, lb = ymd("1987/01/01"), ub = ymd("2017/12/31"), u = 105)
+```
+
+```{r}
+plot_histogram = function(x, binwidth = 1/4, threshold = 104) {
   df = data.frame(x = x) %>% filter(x >= threshold)
   
   ggplot(df, aes(x = x)) + 
@@ -62,81 +126,92 @@ plot_histogram = function(x = longevity$age_years, binwidth = 1/4, threshold = 1
     labs(x = "Age at death", y = "Frequency")
 }
 
-plot_histogram = function(x = longevity$age_years, binwidth = 1/4, threshold = 104) {
-  df = data.frame(x = x) %>% filter(x >= threshold)
-  
-  ggplot(df, aes(x = x)) + 
-    geom_histogram(binwidth = binwidth) +
-    labs(x = "Age at death", y = "Frequency")
+plot_boxplot = function(x) {
+  ggplot(data.frame(x = x), aes(x = x)) +
+    geom_boxplot()
 }
 
-plot_histogram()
-plot_histogram(threshold = 110)
-```
+histogram = plot_histogram(longevity_2017$age_years)
+histogram_truncated = plot_histogram(longevity_2017$age_years, threshold = 110)
+boxplot = plot_boxplot(longevity_2017$age_years)
 
-## Threshold selection
-
-```{r}
-u = 105:112
-tstab = tstab(longevity$age_years, thresh = u, family = "gp", plot.type = "ggplot")
-```
-
-## Model fitting
-
-```{r}
-gp <- fit_elife(
-  time = longevity$age_years,
-  thresh = 104,
-  family = "gp",
-  export = TRUE)
-gp
-```
-
-## Model checking
-
-```{r}
-## PP
-plots = autoplot(gp, which.plot = c("pp", "qq", "cdf", "dens"))
-```
+NDHR = longevity_2017 %>% group_by(age = floor(age_years)) %>% summarise(count = n()) %>% mutate(NDHR = count / lag(count))
 
 
-
-
-## Testing the exponential hypothesis
-### 2017 data
-```{r}
-## Subset the data to -2017, > 108y
-longevity_2017 = longevity %>% filter(death_year <= 2017)
+histogram
+histogram_truncated
+NDHR
+boxplot
 ```
 
 ```{r}
-## Null: fit the exponential model
-exp_2017_108 <- fit_elife(
-  time = longevity_2017$age_years,
-  thresh = 108,
-  family = "exp",
-  export = TRUE)
+args_2017 = with(longevity_2017, list(time = age_years, ltrunc = ltrunc, rtrunc = rtrunc, export = TRUE))
+```
 
-exp_2017_108
+## Testing the exponential hypothesis for 2017 data
 
-## Alternative: fit the gp with no constraints
-gp_2017_108 <- fit_elife(
-  time = longevity_2017$age_years,
-  thresh = 108,
-  family = "gp",
-  export = TRUE)
+Belzile and others (2021) conclude that lifespan is excess of 108 years is consistent with an exponential model, i.e. a generalized Pareto (GPD) with $\xi = 0$. However, if we fit a GPD directly, we get an maximum likelihood estimate of $\hat{\xi} = -0.017 \neq 0$, consistent with a finite upper endpoint. Does this suggest that the exponential is not an appropriate model after all? I don't think so, but the picture is complicated. First and foremost, 0 is wll within one standard error (0.029) of $\hat{\xi}$. Let's delve into some more arguments.
 
+### Sanity check: the case for the GPD
+
+As a sanity check on the appropriateness of the GPD as an approximation, we can verify that the estimate of $\xi$ is indeed fairly stable for values of u $\geq$ 108 ($\hat{\xi}_{112}$ deviates, but this would be well explained sampling variability caused by the low number of observations):
+
+```{r}
+# tstab plot
+with(longevity_2017, tstab(age_years, thresh = 105:112, family = "gp", which.plot = "shape"))
+```
+
+### Goodness-of-fit checks
+
+The QQ-plot shows that the exponential is a reasonable fit, although the case of Jeanne Calment is an extreme outlier, and in the upper tail we can see deviations from linearity:
+
+```{r}
+autoplot(exp_2017_108, which.plot = "qq")
+```
+
+To might thus wonder: how good is the fit, exactly? If the model is indeed 'correct', are these plots consistent with the degree of variability we should expect? Or would the QQ-plot show stronger linearity?
+
+To this end: some more simulations. Interestingly, the goodness-of-fit of the exponential for the actual data is similar to those of exponential fitted to simulated exponential data, really quite well, except for the case of Jeanne Calmet - under an exponential model, such an outlier is still really extreme!
+
+```{r}
+#| eval: false
+#| include: false
+num_plots = 2
+
+plots = vector("list", length = num_plots)
+
+for (i in 1:num_plots) {
+  x = with(longevity_2017_108, simulate_gpd_truncated(exp_2017_108, ltrunc, rtrunc))
+  
+  exp_sim = fit_elife(arguments = args_2017, family = "exp", time = x)
+  
+  plots[i] = autoplot(exp_sim, which.wrap_plots(plot = "qq", plot.type = "ggplot", plot = FALSE))
+}
+
+wrap_plots(plots, ncol = 2)
+```
+
+```{r}
+gp_2017_108 <- fit_elife(arguments = args_2017, family = "gp", thresh = 108)
 gp_2017_108
 ```
 
-Belzile and others (2021) conclude that the data is consistent with an exponential model for the tail, i.e. with xi = 0. Fitting a GP to this data, however, the estimate for xi is +/- -0.015, consistent with a finite upper endpoint. We can see 0 is in fact within one standard error from this result, but how likely is our value of xi precisely if the tail were exponentially distributed? For this, we would need the sampling distribution of xi.
+### Testing: estimating the extremity of our $\xi$-estimate
 
-Approximate the probability of observing a value of xi_hat that is at least as extreme (i.e. large negative) as the one we did observe. I am not sure the regularity conditions for the asymptotic normality of the MLE hold for interval-truncated data. In addition, the sample size is ~1000, which may not be large enough for a precise approximation of the distribution of xi. To circumvent these, problems I simulate 1000 draws from the fitted exponential to approximate the sampling distribution of xi computationally:
+We can test the fit of the exponential in another way: supposing the data is in fact exponentially distributed, how likely is it that we would observe an estimate of $\xi$ that is at least as extreme (i.e. large negative) as ours? To this end, I approximate the sampling distribution of $\hat{\xi}$ using simulation.
+
+I do not use the asymptotic normality property of the MLE for two reasons. Most importantly, the data are not identically distributed due to truncation, and (as far as I know), this is a requirement for the asymptotic normality result. Even if this can be circumvented, however, I am not confident that the sample size (\~1200) warrants using a limiting distribution as an approximation.
+
+Instead, I simulate 1000 draws from the fitted exponential to approximate the sampling distribution of xi computationally. Denote the estimate of $\xi$ from the ith simulated sample and the observed data by $\hat{\xi}_i, \hat{\xi}_{obs}$, respectively. Then
+
+$$ P_{0}(\hat{\xi} \leq \hat{\xi}_{obs}) \approx \frac{\#\{\hat{\xi}_i \leq \hat{\xi}_{obs}\}}{\text{number of samples}} $$
+
+This gives a probability of approximately 0.316; quite large! ADD STANDARD ERROR. So our finding a negative value of xi is not at all evidently inconsistent with an exponential model.
+
+On a tangent, the sampling distribution looks roughly bell-shaped, though skewed a little to the left. This suggests that an asymptotic argument may actually work here! There is something approaching normality going on. This may be worth looking into, whether the assumptions of the result can be relaxed, or the exact shape of the limiting distribution could be slightly modified.
 
 ```{r}
-num_samples = 50
-num_obs_2017_108 = nrow(longevity_2017 %>% filter(age_years >= 108))
-xi_estimates = generate_xi_estimates(num_samples = num_samples, num_obs = num_obs_2017_108, scale = coef(exp_2017_108), shape = 0, thresh = 108)
+xi_estimates = generate_xi_estimates(1000, exp_2017_108, longevity_2017_108)
 
 xi_estimates
 ```
@@ -144,7 +219,7 @@ xi_estimates
 ```{r}
 ## Plot the approximate sampling distribution
 ggplot(data.frame(estimates = xi_estimates), aes(x = estimates)) +
-  geom_histogram(binwidth = 0.005)
+  geom_histogram(binwidth = 0.005) + geom_vline(xintercept = coef(gp_2017_108)["shape"], linetype = 2)
 ```
 
 ```{r}
@@ -153,75 +228,100 @@ p = sum(xi_estimates <= coef(gp_2017_108)["shape"]) / num_samples
 p
 ```
 
+### Comparison of the exponential and unrestricted GPD fits
 
-The sampling distribution looks roughly bell-shaped, though skewed a little to the left. This suggests that an asymptotic argument may actually work here! But for now, we can approximate the probability of our outcome under our null. Denote the estimate of $\xi$ from the observed data and the ith simulated sample by $\hat{\xi}_{obs} \approx$ `coef(gp_2017_108)["shape"]`\`, $\hat{\xi}_i$, respectively. Then $$ P_{0}(\hat{\xi} \leq \hat{\xi}_{obs}) \approx \frac{\#\{\hat{\xi}_i \leq \hat{\xi}_{obs}\}}{\text{number of samples}} $$ This gives a probability of approximately 0.316; quite large! So our finding a negative value of xi is not at all evidently inconsistent with an exponential model.
-
-From a look at the respective density plots, this could have been expected; the two distributions are almost indistinguiseable, as we should have expected. A look at the pp-, qq-plots also reveals that the difference in goodness-of-fit between the two models, if any, is negligible. But the interesting thing is that such a minor difference between the two distributions makes the difference between a finite upper end point and no upper and point at all! 
+From a look at the respective density plots, this could have been expected; the two distributions are almost indistinguishable, as we should have expected. A look at the pp-, qq-plots also reveals that the difference in goodness-of-fit between the two models, if any, is negligible. But the interesting thing is that such a minor difference between the two distributions makes the difference between a finite upper end point and no upper and point at all!
 
 ```{r}
 plots = autoplot(exp_2017_108, which.plot = c("pp", "qq", "dens"))
 plots = autoplot(gp_2017_108, which.plot = c("pp", "qq", "dens"))
 ```
 
-One thing we could ask here, though, is: is the generalized pareto a suitable model to begin with? The deviation from the line suggests that may be the case. So let's do some more simulation and see how likely this extreme value variability would be if the data is indeed pareto-distributed. Interestingly, the goodness-of-fit of the exponential for the actual data is similar to those of exponential fitted to simulated exponential data, really quite well, except for the case of Jeanne Calmet - under an exponential model, such an outlier is still really extreme!
+### Sensitivity to outliers: the Jeanne Calment case
+
+What is the likelihood of observing at least one case of Jeanne Calmet or more extreme under the fitted model? Around 2%, very small! WITH STANDARD ERROR HERE. We can look at the distribution of maxima using a Monte Carlo simulation, which shows the maximum around 118 is not so unlikely, but for 122 it is!
 
 ```{r}
-x = 108 + samp_elife(num_obs_2017_108, scale = coef(exp_2017_108), shape = 0, family = "gp", type2 = "ltrt")
+#| eval: false
+#| include: false
+num_sims = 10000
+observations = numeric(num_sims)
+maxima = numeric(num_sims)
 
-simulated_draws = data.frame(age_years = x)
-
-exp_sim = fit_elife(
-  time = simulated_draws$age_years,
-  thresh = 108,
-  family = "exp",
-  export = TRUE)
-
-autoplot(exp_sim, which.plot = c("qq"))
+for (i in 1:num_sims) {
+  x = 108 + samp_elife(num_obs_2017_108, scale = coef(exp_2017_108), shape = 0, family = "gp", type2 = "ltrt")
+  
+  exp_sim = fit_elife(
+    time = x,
+    thresh = 108,
+    family = "exp",
+    export = TRUE)
+  
+  if (any(x > 122)) {
+    observations[i] = 1
+  } else {
+    observations[i] = 0
+  }
+  maxima[i] = max(x)
+}
 ```
 
-We may wonder then: how sensitive is the result to outliers?
+```{r}
+p_122 = sum(observations) / num_sims
+maxima_plot = ggplot(data.frame(maxima), aes(x = maxima)) + geom_histogram(binwidth = .25) + geom_vline(xintercept = 122, linetype = 2)
+maxima_plot
+```
 
+Now, refit the gp on the data without Jeanne Calmet. The picture changes quite drastically: 0 is now more than 2 standard errors away from the (negative) shape estimate. So we can see that the estimate is highly sensitive to outliers: if Jeanne Calmet, out of \~1200 people in our sample, had died prematurely, our conclusion would change quite significantly!
 
+```{r}
+gp_2017_108_no_outliers <- fit_elife(
+  time = filter(longevity_2017, age_years < 122)$age_years,
+  thresh = 108,
+  family = "gp",
+  export = TRUE)
 
+gp_2017_108_no_outliers
+```
 
+### Conclusion
 
+While the above suggests the exponential distribution is indeed *compatible* with the data, it remains to be shown the data is *in fact* exponentially distributed; as it stands, a GPD with $\xi < 0$ does not seem implausible either. After all, the MLE for $\xi$ was in fact negative, and the estimate of xi is sensitive to outliers. This leaves me wondering whether an infinite endpoint is appropriate. The difference between $\xi = 0$ and $\xi < 0$ seems minor when comparing the plots, yet so momentous when it comes to their respective upper end points. More generally, it makes me wonder how one can test the hypothesis that a parameter $\theta$ is *precisely* zero.
 
 ## Does the new data change things?
+
 In the interceding years, the quantity of IDL data for France has increased by over 50% (5202 new cases). In particular, exceedences of 108 have increased by more than 70% (from 1203 to 2063)! Let's see if the conclusion holds up with this extra data. First, let's choose the most appropriate threshold for the exponential with our additional data.
 
 ## Selecting an appropriate threshold
 
 ```{r}
+with(longevity, tstab(age_years, thresh = 105:112, family = "gp", which.plot = "shape"))
+
 thresh = 108
 ```
 
 ## Model comparison
+
+```{r}
+args = with(longevity, list(time = age_years, ltrunc = ltrunc, rtrunc = rtrunc, export = TRUE))
+```
+
 ```{r}
 ## fit exp
-exp_2024 = fit_elife(
-  time = longevity$age_years,
-  thresh = thresh,
-  family = "exp",
-  export = TRUE)
+exp_2024 = fit_elife(arguments = args, family = "exp", thresh = thresh, export = TRUE)
 
 exp_2024
 
 ## fit gp
-gp_2024 = fit_elife(
-  time = longevity$age_years,
-  thresh = thresh,
-  family = "gp",
-  export = TRUE)
+gp_2024 = fit_elife(arguments = args, family = "gp", thresh = thresh, export = TRUE)
 
 gp_2024
 ```
 
-The shape parameter for the unrestricted pareto fit is more than 50% larger negative than previously, and 0 is now more than one standard error away from our estimate. Consistent with this, judging from the qq-plot, the unrestricted GP, with negative xi, is a slightly better fit for the data than the exponential model:
+The shape parameter for the unrestricted pareto fit is remarkably stable.
+
 ```{r}
 plots = autoplot(exp_2024, which.plot = c("pp", "qq", "dens"))
 plots = autoplot(gp_2024, which.plot = c("pp", "qq", "dens"))
 
 ```
-
-## How sensitive is the conclusion to outliers?
-
