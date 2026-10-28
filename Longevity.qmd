@@ -68,6 +68,15 @@ add_truncation_bounds = function(data, lb, ub, u) {
   data$rtrunc = with(data, interval(birth_date, ub) / years(1))
   data
 }
+
+## Goodness-of-fit plots for a fitted model, combined into one row.
+## plot = FALSE stops autoplot() from printing the plots itself, which fails
+## for longevity < 1.3.1 with ggplot2 >= 4.0 (it looks up a print method that
+## no longer exists), so the plots never show up.
+plot_model_checks = function(model, title = NULL, which.plot = c("pp", "qq", "dens")) {
+  plots = autoplot(model, which.plot = which.plot, plot = FALSE)
+  wrap_plots(plots, nrow = 1) + plot_annotation(title = title)
+}
 ```
 
 ```{r}
@@ -146,6 +155,9 @@ boxplot
 
 ```{r}
 args_2017 = with(longevity_2017, list(time = age_years, ltrunc = ltrunc, rtrunc = rtrunc, export = TRUE))
+longevity_2017_108 = longevity_2017 %>% filter(age_years > 108)
+
+exp_2017_108 <- fit_elife(arguments = args_2017, family = "exp", thresh = 108)
 ```
 
 ## Testing the exponential hypothesis for 2017 data
@@ -166,7 +178,7 @@ with(longevity_2017, tstab(age_years, thresh = 105:112, family = "gp", which.plo
 The QQ-plot shows that the exponential is a reasonable fit, although the case of Jeanne Calment is an extreme outlier, and in the upper tail we can see deviations from linearity:
 
 ```{r}
-autoplot(exp_2017_108, which.plot = "qq")
+plot_model_checks(exp_2017_108, which.plot = "qq")
 ```
 
 To might thus wonder: how good is the fit, exactly? If the model is indeed 'correct', are these plots consistent with the degree of variability we should expect? Or would the QQ-plot show stronger linearity?
@@ -223,7 +235,7 @@ ggplot(data.frame(estimates = xi_estimates), aes(x = estimates)) +
 
 ```{r}
 ## Calculate simulated probability
-p = sum(xi_estimates <= coef(gp_2017_108)["shape"]) / num_samples
+p = sum(xi_estimates <= coef(gp_2017_108)["shape"]) / length(xi_estimates)
 p
 ```
 
@@ -232,8 +244,8 @@ p
 From a look at the respective density plots, this could have been expected; the two distributions are almost indistinguishable, as we should have expected. A look at the pp-, qq-plots also reveals that the difference in goodness-of-fit between the two models, if any, is negligible. But the interesting thing is that such a minor difference between the two distributions makes the difference between a finite upper end point and no upper and point at all!
 
 ```{r}
-plots = autoplot(exp_2017_108, which.plot = c("pp", "qq", "dens"))
-plots = autoplot(gp_2017_108, which.plot = c("pp", "qq", "dens"))
+plot_model_checks(exp_2017_108, title = "Exponential")
+plot_model_checks(gp_2017_108, title = "Generalized Pareto")
 ```
 
 ### Sensitivity to outliers: the Jeanne Calment case
@@ -266,6 +278,7 @@ for (i in 1:num_sims) {
 ```
 
 ```{r}
+#| eval: false
 p_122 = sum(observations) / num_sims
 maxima_plot = ggplot(data.frame(maxima), aes(x = maxima)) + geom_histogram(binwidth = .25) + geom_vline(xintercept = 122, linetype = 2)
 maxima_plot
@@ -320,7 +333,6 @@ gp_2024
 The shape parameter for the unrestricted pareto fit is remarkably stable.
 
 ```{r}
-plots = autoplot(exp_2024, which.plot = c("pp", "qq", "dens"))
-plots = autoplot(gp_2024, which.plot = c("pp", "qq", "dens"))
-
+plot_model_checks(exp_2024, title = "Exponential")
+plot_model_checks(gp_2024, title = "Generalized Pareto")
 ```
